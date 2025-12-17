@@ -1,6 +1,0 @@
-#define IDR_INSTALL7Z 101
-#define IDR_7ZEXE 102
-#define IDR_7ZDLL 103
-#define IDR_WEBVIEW2SETUP 104
-#define IDR_MAINICON 100
-
