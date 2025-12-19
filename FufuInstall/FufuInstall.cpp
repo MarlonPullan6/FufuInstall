@@ -101,6 +101,9 @@ DWORD g_originalAllowDev = 0;             // AllowDevelopmentWithoutDevLicense Ô
 DWORD g_originalAllowTrust = 0;           // AllowAllTrustedApps Ô­Ê¼Öµ
 bool g_regBackedUp = false;               // ÊÇ·ñÒÑ±¸·Ý×¢²á±í
 
+// ÐÂÔöÈ«¾ÖÖØÆô±êÖ¾
+bool g_needsReboot = false; // ÊÇ·ñÐèÒªÖØÆô
+
 // ============================================================================
 // º¯ÊýÇ°ÏòÉùÃ÷
 // ============================================================================
@@ -349,10 +352,91 @@ bool ExecutePowerShellWithLog(const std::wstring& command) {
 
 bool CheckVCRuntime() {
     LogMessage(L"¼ì²é Visual C++ 2015-2019 (VC++14) ÔËÐÐÊ±...");
-    // ²éÑ¯×¢²á±í HKLM\SOFTWARE\Microsoft\VisualStudio\14.0 »òÊ¹ÓÃ ARP
+
+    // ³¢ÊÔÊ¹ÓÃ winget ²éÑ¯°üÐÅÏ¢
+    LogMessage(L"Ê¹ÓÃ winget ¼ì²é VC++ ÔËÐÐÊ±...");
+
+    bool foundByWinget = false;
+
+    SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
+    HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
+    if (CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
+        SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
+
+        STARTUPINFOW si = {};
+        si.cb = sizeof(si);
+        si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+        si.hStdOutput = hWritePipe;
+        si.hStdError = hWritePipe;
+        si.wShowWindow = SW_HIDE;
+
+        PROCESS_INFORMATION pi = {};
+        // Ê¹ÓÃ cmd.exe /c À´µ÷ÓÃ winget
+        wchar_t cmdLine[] = L"cmd.exe /c winget show --id Microsoft.VCRedist.2015+.x64";
+
+        BOOL created = CreateProcessW(nullptr, cmdLine, nullptr, nullptr, TRUE,
+            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+
+        // ¹Ø±ÕÐ´¶Ë¾ä±úÒÔ±ã¶ÁÈ¡Êä³ö
+        CloseHandle(hWritePipe);
+
+        if (created) {
+            // ¶ÁÈ¡Êä³ö
+            std::string output;
+            char buffer[256];
+            DWORD bytesRead = 0;
+            while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr) && bytesRead > 0) {
+                buffer[bytesRead] = '\0';
+                output += buffer;
+            }
+
+            CloseHandle(hReadPipe);
+
+            WaitForSingleObject(pi.hProcess, INFINITE);
+            DWORD exitCode = 1;
+            GetExitCodeProcess(pi.hProcess, &exitCode);
+
+            CloseHandle(pi.hProcess);
+            CloseHandle(pi.hThread);
+
+            // ½«Êä³ö×ªÎª¿í×Ö·û´®ÒÔ¼ÇÂ¼ÈÕÖ¾
+            int wlen = MultiByteToWideChar(CP_OEMCP, 0, output.c_str(), -1, nullptr, 0);
+            std::wstring wout;
+            if (wlen > 0) {
+                wout.resize(wlen);
+                MultiByteToWideChar(CP_OEMCP, 0, output.c_str(), -1, &wout[0], wlen);
+            }
+
+            LogMessage(L"winget Êä³ö: " + wout);
+
+            if (exitCode == 0 && (output.find("Id:") != std::string::npos || output.find("Name:") != std::string::npos || output.find("Microsoft.VCRedist") != std::string::npos || output.find("Visual C++") != std::string::npos)) {
+                LogMessage(L"¼ì²âµ½ VC++ ÔËÐÐÊ± (winget)");
+                foundByWinget = true;
+            }
+            else {
+                LogMessage(L"Î´Í¨¹ý winget ¼ì²âµ½ VC++ ÔËÐÐÊ±");
+            }
+        }
+        else {
+            // ÎÞ·¨´´½¨½ø³Ì£¬¼ÇÂ¼²¢¼ÌÐø×¢²á±í¼ì²â
+            CloseHandle(hReadPipe);
+            LogMessage(L"winget µ÷ÓÃÊ§°Ü»òÎ´°²×°£¬»ØÍËµ½×¢²á±í¼ì²â");
+        }
+    }
+    else {
+        LogMessage(L"´íÎó: ´´½¨¹ÜµÀÊ§°Ü£¬»ØÍËµ½×¢²á±í¼ì²â");
+    }
+
+    if (foundByWinget) {
+        return true;
+    }
+
+    // »ØÍËµ½Ô­ÓÐµÄ×¢²á±í¼ì²âÊµÏÖ
+    LogMessage(L"Ê¹ÓÃ×¢²á±í¼ì²â VC++ ÔËÐÐÊ±...");
     HKEY hKey = nullptr;
-    // Check for the x64 vcredist entry in ARP
     const wchar_t* arpKey = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
+
+    // ¼ì²é 64 Î»·ÖÖ§
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, arpKey, 0, KEY_READ | KEY_WOW64_64KEY, &hKey) == ERROR_SUCCESS) {
         DWORD index = 0;
         wchar_t name[256];
@@ -361,10 +445,10 @@ bool CheckVCRuntime() {
         while (RegEnumKeyExW(hKey, index, name, &nameLen, nullptr, nullptr, nullptr, &ft) == ERROR_SUCCESS) {
             HKEY hSub = nullptr;
             if (RegOpenKeyExW(hKey, name, 0, KEY_READ | KEY_WOW64_64KEY, &hSub) == ERROR_SUCCESS) {
-                wchar_t displayName[512];
+                wchar_t displayName[512] = { 0 };
                 DWORD sz = sizeof(displayName);
                 if (RegQueryValueExW(hSub, L"DisplayName", nullptr, nullptr, (LPBYTE)displayName, &sz) == ERROR_SUCCESS) {
-                    if (wcsstr(displayName, L"Visual C++") && wcsstr(displayName, L"2015") || wcsstr(displayName, L"2017") || wcsstr(displayName, L"2019") || wcsstr(displayName, L"2015-2019")) {
+                    if ((wcsstr(displayName, L"Visual C++") && (wcsstr(displayName, L"2015") || wcsstr(displayName, L"2017") || wcsstr(displayName, L"2019") || wcsstr(displayName, L"2015-2019"))) || wcsstr(displayName, L"Microsoft Visual C++ 2015-2022")) {
                         RegCloseKey(hSub);
                         RegCloseKey(hKey);
                         LogMessage(L"¼ì²âµ½ VC++ ÔËÐÐÊ±: " + std::wstring(displayName));
@@ -379,7 +463,7 @@ bool CheckVCRuntime() {
         RegCloseKey(hKey);
     }
 
-    // Also check the x86 registry branch
+    // ¼ì²é 32 Î»·ÖÖ§
     if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, arpKey, 0, KEY_READ | KEY_WOW64_32KEY, &hKey) == ERROR_SUCCESS) {
         DWORD index = 0;
         wchar_t name[256];
@@ -388,10 +472,10 @@ bool CheckVCRuntime() {
         while (RegEnumKeyExW(hKey, index, name, &nameLen, nullptr, nullptr, nullptr, &ft) == ERROR_SUCCESS) {
             HKEY hSub = nullptr;
             if (RegOpenKeyExW(hKey, name, 0, KEY_READ | KEY_WOW64_32KEY, &hSub) == ERROR_SUCCESS) {
-                wchar_t displayName[512];
+                wchar_t displayName[512] = { 0 };
                 DWORD sz = sizeof(displayName);
                 if (RegQueryValueExW(hSub, L"DisplayName", nullptr, nullptr, (LPBYTE)displayName, &sz) == ERROR_SUCCESS) {
-                    if (wcsstr(displayName, L"Visual C++") && (wcsstr(displayName, L"2015") || wcsstr(displayName, L"2017") || wcsstr(displayName, L"2019") || wcsstr(displayName, L"2015-2019"))) {
+                    if ((wcsstr(displayName, L"Visual C++") && (wcsstr(displayName, L"2015") || wcsstr(displayName, L"2017") || wcsstr(displayName, L"2019") || wcsstr(displayName, L"2015-2019"))) || wcsstr(displayName, L"Microsoft Visual C++ 2015-2022")) {
                         RegCloseKey(hSub);
                         RegCloseKey(hKey);
                         LogMessage(L"¼ì²âµ½ VC++ ÔËÐÐÊ±: " + std::wstring(displayName));
@@ -412,7 +496,7 @@ bool CheckVCRuntime() {
 
 bool InstallVCRuntime() {
     int result = MessageBoxW(g_hMainWnd,
-        L"Î´¼ì²âµ½ Visual C++ 2015-2019 (VC++14) ÔËÐÐÊ±£¬ÊÇ·ñ×Ô¶¯Ê¹ÓÃ winget °²×°£¿\n\nµã»÷[ÊÇ]½«Ê¹ÓÃ winget ×Ô¶¯°²×°\nµã»÷[·ñ]½«ÏÔÊ¾ÊÖ¶¯°²×°ËµÃ÷",
+        L"Î´¼ì²âµ½ Visual C++ 2015-2022 (VC++14) ÔËÐÐÊ±£¬ÊÇ·ñ×Ô¶¯Ê¹ÓÃ winget °²×°£¿\n\nµã»÷[ÊÇ]½«Ê¹ÓÃ winget ×Ô¶¯°²×°\nµã»÷[·ñ]½«ÏÔÊ¾ÊÖ¶¯°²×°ËµÃ÷",
         L"È±ÉÙÒÀÀµÏî", MB_YESNO | MB_ICONQUESTION);
 
     if (result == IDYES) {
@@ -422,7 +506,7 @@ bool InstallVCRuntime() {
         sei.hwnd = g_hMainWnd;
         sei.lpVerb = L"runas";
         sei.lpFile = L"cmd.exe";
-        sei.lpParameters = L"/c winget install --id Microsoft.VCRedist.2015+.x64 -e --accept-source-agreements --accept-package-agreements";
+        sei.lpParameters = L"/c winget install --id Microsoft.VCRedist.2015+.x64 --interactive";
         sei.nShow = SW_SHOW;
 
         if (ShellExecuteExW(&sei)) {
@@ -431,7 +515,13 @@ bool InstallVCRuntime() {
             GetExitCodeProcess(sei.hProcess, &exitCode);
             CloseHandle(sei.hProcess);
             LogMessage(L"winget °²×° VC++ ÔËÐÐÊ±Íê³É£¬ÍË³ö´úÂë: " + std::to_wstring(exitCode));
-            return exitCode == 0;
+
+            // Èç¹û°²×°³É¹¦£¬±ê¼ÇÐèÒªÖØÆô£¨µ«²»ÒªÁ¢¿Ìµ¯´°£©£¬½«ÔÚËùÓÐ°²×°Íê³ÉºóÌáÊ¾
+            if (exitCode == 0) {
+                g_needsReboot = true;
+                LogMessage(L"VC++ ÔËÐÐÊ±°²×°³É¹¦£¬±ê¼ÇÎªÐèÒªÖØÆô");
+                return true;
+            }
         }
         else {
             LogMessage(L"´íÎó: ÎÞ·¨Æô¶¯ winget °²×° VC++ ÔËÐÐÊ±");
@@ -440,7 +530,7 @@ bool InstallVCRuntime() {
     }
     else {
         MessageBoxW(g_hMainWnd,
-            L"ÇëÔÚ¹ÜÀíÔ±ÃüÁîÌáÊ¾·ûÖÐÔËÐÐÒÔÏÂÃüÁî°²×° Visual C++ 2015-2019 ÔËÐÐÊ±:\n\nwinget install --id Microsoft.VC++2015Redist.x64 -e",
+            L"ÇëÔÚ¹ÜÀíÔ±ÃüÁîÌáÊ¾·ûÖÐÔËÐÐÒÔÏÂÃüÁî°²×° Visual C++ 2015-2022 ÔËÐÐÊ±:\n\nwinget install --id Microsoft.VCRedist.2015+.x64 --interactive",
             L"ÊÖ¶¯°²×°ËµÃ÷", MB_OK | MB_ICONINFORMATION);
         return false;
     }
@@ -942,6 +1032,16 @@ void ShowPage(int page) {
             MoveWindow(g_hNextButton, xNext, BUTTON_Y, NEXT_WIDTH, BUTTON_HEIGHT, TRUE);
             MoveWindow(g_hCancelButton, rcClient.right + 10, BUTTON_Y, CANCEL_WIDTH, BUTTON_HEIGHT, TRUE);
         }
+        else if (page == PAGE_PROGRESS) {
+            // ÔÚ°²×°½ø¶ÈÒ³Ê±Ò²½«¡°ÉÏÒ»²½¡±ºÍ¡°°²×°ÖÐ...¡±°´Å¥ÓÒ¶ÔÆë£¬ÒÔ±ãÓëÍê³ÉÒ³±£³ÖÒ»ÖÂ
+            int xNext = rcClient.right - BUTTON_RIGHT_MARGIN - NEXT_WIDTH;
+            int xBack = xNext - BUTTON_SPACING - BACK_WIDTH;
+
+            MoveWindow(g_hBackButton, xBack, BUTTON_Y, BACK_WIDTH, BUTTON_HEIGHT, TRUE);
+            MoveWindow(g_hNextButton, xNext, BUTTON_Y, NEXT_WIDTH, BUTTON_HEIGHT, TRUE);
+            // Òþ²ØÈ¡Ïû°´Å¥£¨·Åµ½´°¿ÚÍâ£©
+            MoveWindow(g_hCancelButton, rcClient.right + 10, BUTTON_Y, CANCEL_WIDTH, BUTTON_HEIGHT, TRUE);
+        }
         else {
             MoveWindow(g_hBackButton, BUTTON_DEFAULT_BACK_X, BUTTON_Y, BACK_WIDTH, BUTTON_HEIGHT, TRUE);
             MoveWindow(g_hNextButton, BUTTON_DEFAULT_NEXT_X, BUTTON_Y, NEXT_WIDTH, BUTTON_HEIGHT, TRUE);
@@ -1159,8 +1259,9 @@ DWORD WINAPI PerformConfigurationThread(LPVOID lpParam) {
 cleanup:
     g_installSuccess = success;
 
-    // ·¢ËÍÍê³ÉÏûÏ¢
-    PostMessageW(g_hMainWnd, WM_CONFIGURATION_COMPLETE, success ? 1 : 0, 0);
+    // ·¢ËÍÍê³ÉÏûÏ¢£¬wParam low bit = success, bit 8 = needs reboot
+    WPARAM completionParam = (g_installSuccess ? 1 : 0) | (g_needsReboot ? (1 << 8) : 0);
+    PostMessageW(g_hMainWnd, WM_CONFIGURATION_COMPLETE, completionParam, 0);
 
     return 0;
 }
@@ -1363,13 +1464,50 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
 
     case WM_CONFIGURATION_COMPLETE: {
         // °²×°Íê³ÉÏûÏ¢
-        g_installSuccess = (wParam == 1);
+        // wParam low bit = success, bit 8 = needs reboot
+        g_installSuccess = ((wParam & 0x1) == 1);
+        bool needsReboot = ((wParam & (1 << 8)) != 0);
+
         // È·±£½ø¶ÈÌõÏÔÊ¾Íê³É×´Ì¬²¢ÏÔÊ¾Íê³ÉÒ³Ãæ
         if (g_hProgressBar) {
             SendMessageW(g_hProgressBar, PBM_SETPOS, 100, 0);
             ShowWindow(g_hProgressBar, SW_SHOW);
         }
         ShowPage(PAGE_COMPLETE);
+
+        // Èç¹ûÐèÒªÖØÆô£¬µ¯´°ÌáÊ¾ÓÃ»§ÊÇ·ñÁ¢¼´ÖØÆô
+        if (needsReboot) {
+            int rebootChoice = MessageBoxW(g_hMainWnd,
+                L"°²×°¹ý³ÌÖÐÐèÒªÖØÆôµçÄÔÒÔÍê³ÉÄ³Ð©×é¼þµÄ°²×°£¬Äú¿ÉÒÔÑ¡ÔñÁ¢¼´ÖØÆô»òÉÔºóÊÖ¶¯ÖØÆô¡£",
+                L"ÖØÆôÌáÊ¾", MB_YESNO | MB_ICONQUESTION);
+
+            if (rebootChoice == IDYES) {
+                LogMessage(L"ÓÃ»§Ñ¡ÔñÁ¢¼´ÖØÆô£¬ÕýÔÚÖ´ÐÐÖØÆô...");
+                SHELLEXECUTEINFOW seiShutdown = { sizeof(seiShutdown) };
+                seiShutdown.fMask = SEE_MASK_NOCLOSEPROCESS;
+                seiShutdown.hwnd = g_hMainWnd;
+                seiShutdown.lpVerb = L"runas";
+                seiShutdown.lpFile = L"shutdown.exe";
+                seiShutdown.lpParameters = L"/r /t 0";
+                seiShutdown.nShow = SW_SHOW;
+
+                if (ShellExecuteExW(&seiShutdown)) {
+                    WaitForSingleObject(seiShutdown.hProcess, 5000);
+                    DWORD scExit = 0;
+                    if (GetExitCodeProcess(seiShutdown.hProcess, &scExit)) {
+                        LogMessage(L"shutdown.exe ·µ»Ø´úÂë: " + std::to_wstring(scExit));
+                    }
+                    CloseHandle(seiShutdown.hProcess);
+                }
+                else {
+                    LogMessage(L"´íÎó: ÎÞ·¨Æô¶¯ shutdown.exe À´ÖØÆôÏµÍ³");
+                }
+            }
+            else {
+                LogMessage(L"ÓÃ»§Ñ¡ÔñÉÔºóÖØÆô");
+            }
+        }
+
         return 0;
     }
 
