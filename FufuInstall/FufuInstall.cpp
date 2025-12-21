@@ -353,144 +353,105 @@ bool ExecutePowerShellWithLog(const std::wstring& command) {
 bool CheckVCRuntime() {
     LogMessage(L"检查 Visual C++ 2015-2019 (VC++14) 运行时...");
 
-    // 尝试使用 winget 查询包信息
-    LogMessage(L"使用 winget 检查 VC++ 运行时...");
-
-    bool foundByWinget = false;
-
+    // 使用 winget install 检查/安装 VC++ 运行时（如果未安装会开始安装）
     SECURITY_ATTRIBUTES sa = { sizeof(sa), nullptr, TRUE };
     HANDLE hReadPipe = nullptr, hWritePipe = nullptr;
-    if (CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
-        SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
-
-        STARTUPINFOW si = {};
-        si.cb = sizeof(si);
-        si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
-        si.hStdOutput = hWritePipe;
-        si.hStdError = hWritePipe;
-        si.wShowWindow = SW_HIDE;
-
-        PROCESS_INFORMATION pi = {};
-        // 使用 cmd.exe /c 来调用 winget
-        wchar_t cmdLine[] = L"cmd.exe /c winget show --id Microsoft.VCRedist.2015+.x64";
-
-        BOOL created = CreateProcessW(nullptr, cmdLine, nullptr, nullptr, TRUE,
-            CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
-
-        // 关闭写端句柄以便读取输出
-        CloseHandle(hWritePipe);
-
-        if (created) {
-            // 读取输出
-            std::string output;
-            char buffer[256];
-            DWORD bytesRead = 0;
-            while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr) && bytesRead > 0) {
-                buffer[bytesRead] = '\0';
-                output += buffer;
-            }
-
-            CloseHandle(hReadPipe);
-
-            WaitForSingleObject(pi.hProcess, INFINITE);
-            DWORD exitCode = 1;
-            GetExitCodeProcess(pi.hProcess, &exitCode);
-
-            CloseHandle(pi.hProcess);
-            CloseHandle(pi.hThread);
-
-            // 将输出转为宽字符串以记录日志
-            int wlen = MultiByteToWideChar(CP_OEMCP, 0, output.c_str(), -1, nullptr, 0);
-            std::wstring wout;
-            if (wlen > 0) {
-                wout.resize(wlen);
-                MultiByteToWideChar(CP_OEMCP, 0, output.c_str(), -1, &wout[0], wlen);
-            }
-
-            LogMessage(L"winget 输出: " + wout);
-
-            if (exitCode == 0 && (output.find("Id:") != std::string::npos || output.find("Name:") != std::string::npos || output.find("Microsoft.VCRedist") != std::string::npos || output.find("Visual C++") != std::string::npos)) {
-                LogMessage(L"检测到 VC++ 运行时 (winget)");
-                foundByWinget = true;
-            }
-            else {
-                LogMessage(L"未通过 winget 检测到 VC++ 运行时");
-            }
-        }
-        else {
-            // 无法创建进程，记录并继续注册表检测
-            CloseHandle(hReadPipe);
-            LogMessage(L"winget 调用失败或未安装，回退到注册表检测");
-        }
-    }
-    else {
-        LogMessage(L"错误: 创建管道失败，回退到注册表检测");
+    if (!CreatePipe(&hReadPipe, &hWritePipe, &sa, 0)) {
+        LogMessage(L"错误: 创建管道失败，无法使用 winget 检测 VC++ 运行时");
+        return false;
     }
 
-    if (foundByWinget) {
+    SetHandleInformation(hReadPipe, HANDLE_FLAG_INHERIT, 0);
+
+    STARTUPINFOW si = {};
+    si.cb = sizeof(si);
+    si.dwFlags = STARTF_USESTDHANDLES | STARTF_USESHOWWINDOW;
+    si.hStdOutput = hWritePipe;
+    si.hStdError = hWritePipe;
+    si.wShowWindow = SW_HIDE;
+
+    PROCESS_INFORMATION pi = {};
+    // 使用 cmd.exe /c 来调用 winget install；加上非交互参数以避免提示
+    wchar_t cmdLine[] = L"cmd.exe /c winget install --id Microsoft.VCRedist.2015+.x64 --source winget --accept-source-agreements --accept-package-agreements --silent";
+
+    BOOL created = CreateProcessW(nullptr, cmdLine, nullptr, nullptr, TRUE,
+        CREATE_NO_WINDOW, nullptr, nullptr, &si, &pi);
+
+    // 关闭写端句柄以便读取输出
+    CloseHandle(hWritePipe);
+
+    if (!created) {
+        CloseHandle(hReadPipe);
+        LogMessage(L"winget 调用失败或未安装。");
+        return false;
+    }
+
+    // 读取输出
+    std::string output;
+    char buffer[512];
+    DWORD bytesRead = 0;
+    while (ReadFile(hReadPipe, buffer, sizeof(buffer) - 1, &bytesRead, nullptr) && bytesRead > 0) {
+        buffer[bytesRead] = '\0';
+        output += buffer;
+    }
+
+    CloseHandle(hReadPipe);
+
+    WaitForSingleObject(pi.hProcess, INFINITE);
+    DWORD exitCode = 1;
+    GetExitCodeProcess(pi.hProcess, &exitCode);
+
+    CloseHandle(pi.hProcess);
+    CloseHandle(pi.hThread);
+
+    // 将输出转为宽字符串以记录日志并用于中文匹配
+    auto ConvertToWide = [&](UINT codePage) {
+        int len = MultiByteToWideChar(codePage, 0, output.c_str(), -1, nullptr, 0);
+        if (len <= 0) return std::wstring();
+        std::wstring tmp(len, 0);
+        MultiByteToWideChar(codePage, 0, output.c_str(), -1, &tmp[0], len);
+        return tmp;
+    };
+
+    // winget 输出通常为 UTF-8，失败时回退到控制台代码页
+    std::wstring wout = ConvertToWide(CP_UTF8);
+    if (wout.empty()) {
+        wout = ConvertToWide(CP_OEMCP);
+    }
+
+    LogMessage(L"winget 输出: " + wout);
+
+    // 如果 exitCode==0 则判断为成功
+    if (exitCode == 0) {
+        LogMessage(L"检测到或成功安装 VC++ 运行时 (winget 返回 0)");
         return true;
     }
 
-    // 回退到原有的注册表检测实现
-    LogMessage(L"使用注册表检测 VC++ 运行时...");
-    HKEY hKey = nullptr;
-    const wchar_t* arpKey = L"SOFTWARE\\Microsoft\\Windows\\CurrentVersion\\Uninstall";
-
-    // 检查 64 位分支
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, arpKey, 0, KEY_READ | KEY_WOW64_64KEY, &hKey) == ERROR_SUCCESS) {
-        DWORD index = 0;
-        wchar_t name[256];
-        DWORD nameLen = sizeof(name) / sizeof(name[0]);
-        FILETIME ft;
-        while (RegEnumKeyExW(hKey, index, name, &nameLen, nullptr, nullptr, nullptr, &ft) == ERROR_SUCCESS) {
-            HKEY hSub = nullptr;
-            if (RegOpenKeyExW(hKey, name, 0, KEY_READ | KEY_WOW64_64KEY, &hSub) == ERROR_SUCCESS) {
-                wchar_t displayName[512] = { 0 };
-                DWORD sz = sizeof(displayName);
-                if (RegQueryValueExW(hSub, L"DisplayName", nullptr, nullptr, (LPBYTE)displayName, &sz) == ERROR_SUCCESS) {
-                    if ((wcsstr(displayName, L"Visual C++") && (wcsstr(displayName, L"2015") || wcsstr(displayName, L"2017") || wcsstr(displayName, L"2019") || wcsstr(displayName, L"2015-2019"))) || wcsstr(displayName, L"Microsoft Visual C++ 2015-2022")) {
-                        RegCloseKey(hSub);
-                        RegCloseKey(hKey);
-                        LogMessage(L"检测到 VC++ 运行时: " + std::wstring(displayName));
-                        return true;
-                    }
-                }
-                RegCloseKey(hSub);
-            }
-            index++;
-            nameLen = sizeof(name) / sizeof(name[0]);
-        }
-        RegCloseKey(hKey);
+    // 即使 exitCode 非零，也解析输出内容判断是否表示已安装或已是最新
+    // 检查中文提示
+    if (wout.find(L"找到已安装的现有包") != std::wstring::npos ||
+        wout.find(L"正在尝试升级已安装的包") != std::wstring::npos ||
+        wout.find(L"找不到可用的升级") != std::wstring::npos ||
+        wout.find(L"没有可用的较新的包版本") != std::wstring::npos ||
+        wout.find(L"已安装") != std::wstring::npos) {
+        LogMessage(L"winget 输出表明包已安装或为最新，视为已安装");
+        return true;
     }
 
-    // 检查 32 位分支
-    if (RegOpenKeyExW(HKEY_LOCAL_MACHINE, arpKey, 0, KEY_READ | KEY_WOW64_32KEY, &hKey) == ERROR_SUCCESS) {
-        DWORD index = 0;
-        wchar_t name[256];
-        DWORD nameLen = sizeof(name) / sizeof(name[0]);
-        FILETIME ft;
-        while (RegEnumKeyExW(hKey, index, name, &nameLen, nullptr, nullptr, nullptr, &ft) == ERROR_SUCCESS) {
-            HKEY hSub = nullptr;
-            if (RegOpenKeyExW(hKey, name, 0, KEY_READ | KEY_WOW64_32KEY, &hSub) == ERROR_SUCCESS) {
-                wchar_t displayName[512] = { 0 };
-                DWORD sz = sizeof(displayName);
-                if (RegQueryValueExW(hSub, L"DisplayName", nullptr, nullptr, (LPBYTE)displayName, &sz) == ERROR_SUCCESS) {
-                    if ((wcsstr(displayName, L"Visual C++") && (wcsstr(displayName, L"2015") || wcsstr(displayName, L"2017") || wcsstr(displayName, L"2019") || wcsstr(displayName, L"2015-2019"))) || wcsstr(displayName, L"Microsoft Visual C++ 2015-2022")) {
-                        RegCloseKey(hSub);
-                        RegCloseKey(hKey);
-                        LogMessage(L"检测到 VC++ 运行时: " + std::wstring(displayName));
-                        return true;
-                    }
-                }
-                RegCloseKey(hSub);
-            }
-            index++;
-            nameLen = sizeof(name) / sizeof(name[0]);
-        }
-        RegCloseKey(hKey);
+    // 检查英文提示（小写比较)
+    std::string outLower = output;
+    for (auto &c : outLower) c = (char)tolower((unsigned char)c);
+
+    if (outLower.find("already installed") != std::string::npos ||
+        outLower.find("no applicable upgrade") != std::string::npos ||
+        outLower.find("no available upgrade") != std::string::npos ||
+        outLower.find("no newer package versions") != std::string::npos ||
+        outLower.find("installed") != std::string::npos) {
+        LogMessage(L"winget 输出（英文）表明包已安装或为最新，视为已安装");
+        return true;
     }
 
-    LogMessage(L"未检测到 VC++14 运行时");
+    LogMessage(L"未检测到 VC++ 运行时 (winget 返回非零 且 未在输出中识别到已安装/最新提示)");
     return false;
 }
 
@@ -506,7 +467,7 @@ bool InstallVCRuntime() {
         sei.hwnd = g_hMainWnd;
         sei.lpVerb = L"runas";
         sei.lpFile = L"cmd.exe";
-        sei.lpParameters = L"/c winget install --id Microsoft.VCRedist.2015+.x64 --interactive";
+        sei.lpParameters = L"/c winget install --id Microsoft.VCRedist.2015+.x64 --source winget --interactive";
         sei.nShow = SW_SHOW;
 
         if (ShellExecuteExW(&sei)) {

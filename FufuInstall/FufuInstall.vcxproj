@@ -84,14 +84,14 @@
     <ReferencePath>$(ReferencePath)</ReferencePath>
     <PublicIncludeDirectories>
     </PublicIncludeDirectories>
-    <TargetName>FufuLauncher--Install</TargetName>
+    <TargetName>FufuInstall--Release</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <IncludePath>$(IncludePath)</IncludePath>
     <ReferencePath>$(ReferencePath)</ReferencePath>
     <PublicIncludeDirectories>
     </PublicIncludeDirectories>
-    <TargetName>FufuLauncher--Install</TargetName>
+    <TargetName>FufuInstall--Release</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
