@@ -1,0 +1,7 @@
+<Solution>
+  <Configurations>
+    <Platform Name="x64" />
+    <Platform Name="x86" />
+  </Configurations>
+  <Project Path="FufuInstall-Cloud/FufuInstall.vcxproj" Id="296280db-ea48-49d4-9671-a105e9fda111" />
+</Solution>
