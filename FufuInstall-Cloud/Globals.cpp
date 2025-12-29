@@ -18,6 +18,7 @@ HWND g_hBrowseButton = nullptr;                  // 浏览路径按钮
 HWND g_hVersionLabel = nullptr;                  // 版本显示标签
 HWND g_hVersionTab = nullptr;                    // 版本选择标签页控件
 HWND g_hFileInfoLabel = nullptr;                 // 文件信息标签
+HWND g_hProgressText = nullptr;                  // 进度文本标签
 
 HFONT g_hTitleFont = nullptr;                    // 标题字体
 HFONT g_hNormalFont = nullptr;                   // 正文字体

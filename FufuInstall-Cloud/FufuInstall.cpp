@@ -25,6 +25,7 @@
 #include "FufuInstall.h"
 #include "EnvChecks.h"
 #include "uninstaller.h"
+#include "Downloader.h"
 
 #pragma comment(lib, "comctl32.lib")
 #pragma comment(lib, "shell32.lib")
@@ -255,7 +256,7 @@ void PopulateVersionTabs() {
     // 清除现有选项卡
     SendMessageW(g_hVersionTab, LB_RESETCONTENT, 0, 0);
 
-    // 按频道分组添加选项卡
+    // 按渠道分组添加选项卡
     std::vector<std::wstring> channels;
     for (const auto& v : g_versions) {
         bool found = false;
@@ -320,7 +321,9 @@ void OnVersionTabSelected() {
 
 bool FetchFileInfo(const std::wstring& url, std::wstring& outInfo) {
     outInfo.clear();
-    std::wstring cmd = L"curl.exe -I \"" + url + L"\"";
+
+    // Use -i to include response headers, and -L to follow redirects (CDN often redirects).
+    std::wstring cmd = L"curl.exe -i -L \"" + url + L"\"";
     std::string output;
     DWORD exitCode = 0;
     if (!RunCommandCapture(cmd, output, &exitCode) || exitCode != 0) {
@@ -334,25 +337,121 @@ bool FetchFileInfo(const std::wstring& url, std::wstring& outInfo) {
     auto extractHeader = [&](const std::string& header) {
         std::string headerLower = header;
         std::transform(headerLower.begin(), headerLower.end(), headerLower.begin(), [](unsigned char c) { return (char)std::tolower(c); });
-        size_t pos = lower.find(headerLower + ":");
-        if (pos == std::string::npos) return std::string();
+
+        // Parse the LAST occurrence (after redirects) so we get the final response headers.
+        std::string needle = "\n" + headerLower + ":";
+        size_t pos = lower.rfind(needle);
+        if (pos == std::string::npos) {
+            // Also try at buffer start (no leading \n).
+            needle = headerLower + ":";
+            pos = lower.rfind(needle);
+            if (pos == std::string::npos) return std::string();
+        } else {
+            pos += 1; // skip '\n'
+        }
+
         size_t start = pos + headerLower.size() + 1;
+        if (start < output.size() && output[start] == ' ') start++;
+
         size_t end = output.find('\n', start);
         std::string raw = output.substr(start, end == std::string::npos ? std::string::npos : end - start);
-        return TrimString(raw);
+        raw = TrimString(raw);
+        if (!raw.empty() && raw.back() == '\r') raw.pop_back();
+        return raw;
         };
 
+    auto pickFirstNonEmpty = [&](const std::vector<std::string>& headers) {
+        for (const auto& h : headers) {
+            std::string v = extractHeader(h);
+            if (!v.empty()) return v;
+        }
+        return std::string();
+        };
+
+    auto trimOuterQuotes = [&](std::string s) {
+        s = TrimString(s);
+        if (s.size() >= 2 && ((s.front() == '"' && s.back() == '"') || (s.front() == '\'' && s.back() == '\''))) {
+            s = s.substr(1, s.size() - 2);
+        }
+        return s;
+        };
+
+    auto parseUnsignedLongLong = [&](const std::string& s, unsigned long long& valueOut) {
+        valueOut = 0;
+        std::string t = TrimString(s);
+        if (t.empty()) return false;
+        const char* p = t.c_str();
+        char* endPtr = nullptr;
+        unsigned long long v = strtoull(p, &endPtr, 10);
+        if (endPtr == p) return false;
+        valueOut = v;
+        return true;
+        };
+
+    // Basic file info
     std::string lengthStr = extractHeader("Content-Length");
     std::string lastModified = extractHeader("Last-Modified");
     std::string acceptRanges = extractHeader("Accept-Ranges");
 
+    // Cached time in CDN / edge (best-effort)
+    // Prefer Age (seconds in cache) if present; otherwise use other CDN-specific headers.
+    std::string ageStr = extractHeader("Age");
+    std::string cacheTimeRaw = pickFirstNonEmpty({
+        "X-Cache-Time",
+        "X-Cache-Ttl",
+        "X-Ttl",
+        "X-Served-By",
+        "X-Cache-Hits"
+        });
+
+    // File unique identifier (best-effort)
+    std::string fileId = pickFirstNonEmpty({
+        "ETag",
+        "Content-MD5",
+        "X-Checksum-Sha256",
+        "X-Checksum-Sha1",
+        "X-Bz-Content-Sha1",
+        "X-Amz-Version-Id",
+        "X-Request-Id",
+        "X-Cache-Key"
+        });
+
+    auto toWideOrUnknown = [&](const std::string& v, const wchar_t* unknown) {
+        return v.empty() ? std::wstring(unknown) : ToWide(v);
+        };
+
     std::wstring sizeText = lengthStr.empty() ? L"未知大小" : FormatSizeFromLength(ToWide(lengthStr));
     std::wstring lastText = lastModified.empty() ? L"未知" : ToWide(lastModified);
+
     std::wstring acceptWide = ToWide(acceptRanges);
     std::wstring resumeText = (!acceptRanges.empty() && _wcsicmp(acceptWide.c_str(), L"bytes") == 0) ? L"支持" : L"不确定";
 
+    // Age -> hours
+    std::wstring cacheHoursText = L"未知";
+    {
+        unsigned long long ageSeconds = 0;
+        if (parseUnsignedLongLong(ageStr, ageSeconds)) {
+            double hours = static_cast<double>(ageSeconds) / 3600.0;
+            wchar_t buf[64];
+            swprintf_s(buf, L"%.2f 小时", hours);
+            cacheHoursText = buf;
+        }
+    }
+
+    std::wstring fileIdText = toWideOrUnknown(trimOuterQuotes(fileId), L"未知");
+
+    // When we cannot parse Age, show fallback cache-related header as raw value.
+    if (cacheHoursText == L"未知") {
+        std::wstring fallback = toWideOrUnknown(cacheTimeRaw, L"未知");
+        if (fallback != L"未知") {
+            cacheHoursText = fallback;
+        }
+    }
+
     outInfo = L"文件大小: " + sizeText +
         L"\r\n最后修改时间: " + lastText +
+        L"\r\n文件标识符: " + fileIdText +
+        L"\r\nCDN缓存时间: " + cacheHoursText +
         L"\r\n断点续传: " + resumeText;
     LogMessage(outInfo);
     return true;
@@ -439,6 +538,91 @@ bool ExecutePowerShellWithLog(const std::wstring& command) {
     return exitCode == 0;
 }
 
+static std::wstring FormatSpeed(double bytesPerSec) {
+    if (bytesPerSec <= 0.0) return L"0 B/s";
+    double v = bytesPerSec;
+    const wchar_t* units[] = { L"B/s", L"KB/s", L"MB/s", L"GB/s" };
+    int idx = 0;
+    while (v >= 1024.0 && idx < 3) {
+        v /= 1024.0;
+        ++idx;
+    }
+    wchar_t buf[64];
+    swprintf_s(buf, L"%.2f %s", v, units[idx]);
+    return buf;
+}
+
+struct ProgressTextPayload {
+    int percent;
+    double bytesPerSecond;
+    unsigned long long downloadedBytes;
+    unsigned long long totalBytes;
+};
+
+static void WINAPI DownloadProgressThunk(const DownloadProgress& p, void* userData) {
+    HWND hwnd = (HWND)userData;
+    if (!hwnd) return;
+
+    auto* payload = new ProgressTextPayload{};
+    payload->percent = p.percent;
+    payload->bytesPerSecond = p.bytesPerSecond;
+    payload->downloadedBytes = p.downloadedBytes;
+    payload->totalBytes = p.totalBytes;
+
+    PostMessageW(hwnd, WM_UPDATE_PROGRESS_TEXT, 0, (LPARAM)payload);
+}
+
+static void LogMessageReplaceLastLine(const std::wstring& message) {
+    if (g_hLogEdit == nullptr) {
+        return;
+    }
+
+    // Progress line replacement: do NOT prepend a timestamp, otherwise each update changes the
+    // line prefix and can visually look like multiple concatenated log entries.
+    std::wstring fullMessage = message + L"\r\n";
+
+    int textLen = GetWindowTextLengthW(g_hLogEdit);
+    if (textLen <= 0) {
+        SendMessageW(g_hLogEdit, EM_SETSEL, 0, 0);
+        SendMessageW(g_hLogEdit, EM_REPLACESEL, FALSE, (LPARAM)fullMessage.c_str());
+        SendMessageW(g_hLogEdit, EM_SCROLLCARET, 0, 0);
+        return;
+    }
+
+    int totalLines = (int)SendMessageW(g_hLogEdit, EM_GETLINECOUNT, 0, 0);
+    int targetLine = totalLines - 1;
+    for (; targetLine >= 0; --targetLine) {
+        int start = (int)SendMessageW(g_hLogEdit, EM_LINEINDEX, targetLine, 0);
+        if (start < 0) continue;
+        int lineLen = (int)SendMessageW(g_hLogEdit, EM_LINELENGTH, start, 0);
+        if (lineLen > 0) {
+            break;
+        }
+    }
+    if (targetLine < 0) targetLine = 0;
+
+    int lineStart = (int)SendMessageW(g_hLogEdit, EM_LINEINDEX, targetLine, 0);
+    if (lineStart < 0) lineStart = 0;
+
+    int lineLen = (int)SendMessageW(g_hLogEdit, EM_LINELENGTH, lineStart, 0);
+    int lineEnd = lineStart + max(0, lineLen);
+
+    // Replace the line including any trailing CRLF.
+    int replaceEnd = lineEnd;
+    if (replaceEnd + 2 <= textLen) {
+        replaceEnd += 2;
+    }
+
+    SendMessageW(g_hLogEdit, EM_SETSEL, lineStart, replaceEnd);
+    SendMessageW(g_hLogEdit, EM_REPLACESEL, FALSE, (LPARAM)fullMessage.c_str());
+    SendMessageW(g_hLogEdit, EM_SCROLLCARET, 0, 0);
+}
+
+static void WINAPI DownloadProgressLogThunk(const std::wstring& text, void* /*userData*/) {
+    // Replace the last log line so progress stays on a single dynamically updating line.
+    LogMessageReplaceLastLine(text);
+}
+
 bool DownloadSelectedVersion(std::wstring& outFilePath) {
     if (g_selectedDownloadUrl.empty()) {
         LogMessage(L"未选择下载地址");
@@ -453,9 +637,26 @@ bool DownloadSelectedVersion(std::wstring& outFilePath) {
 
     CreateDirectoryW(kDownloadBaseDir.c_str(), nullptr);
     std::wstring dest = kDownloadBaseDir + L"\\" + fileName;
-    HRESULT hr = URLDownloadToFileW(nullptr, g_selectedDownloadUrl.c_str(), dest.c_str(), 0, nullptr);
-    if (FAILED(hr)) {
-        LogMessage(L"下载失败，HRESULT=" + std::to_wstring(hr));
+
+    LogMessage(L"开始下载: " + g_selectedDownloadUrl);
+    if (g_hProgressText) {
+        SetWindowTextW(g_hProgressText, L"下载中: 0% (0 B/s)");
+        ShowWindow(g_hProgressText, SW_SHOW);
+    }
+
+    // Reserve a single progress line (will be replaced in-place)
+    LogMessageReplaceLastLine(L"[..............................] 0% (0 B / 0 B)  0 B/s");
+
+    std::wstring err;
+    bool ok = DownloadFileWithProgressWinHttp(
+        g_selectedDownloadUrl,
+        dest,
+        DownloadProgressThunk,
+        DownloadProgressLogThunk,
+        g_hMainWnd,
+        &err);
+    if (!ok) {
+        LogMessage(L"下载失败: " + err);
         return false;
     }
 
@@ -464,24 +665,14 @@ bool DownloadSelectedVersion(std::wstring& outFilePath) {
     return true;
 }
 
-std::wstring GetCurrentVersion() {
-    if (!g_selectedVersion.empty()) return g_selectedVersion;
-    for (const auto& v : g_versions) {
-        if (_wcsicmp(v.channel.c_str(), L"Release") == 0 && !v.version.empty()) {
-            return v.version;
-        }
-    }
-    if (!g_versions.empty()) {
-        return g_versions.front().version;
-    }
-    return kFallbackVersion;
-}
-
 std::wstring ExtractFileNameFromUrl(const std::wstring& url) {
-    if (url.empty()) return L"";
+    if (url.empty()) return L"";//
+
     size_t lastSlash = url.find_last_of(L"/\\");
     if (lastSlash == std::wstring::npos) return url;
+
     std::wstring fileName = url.substr(lastSlash + 1);
+
     // Remove query string if present
     size_t queryPos = fileName.find(L'?');
     if (queryPos != std::wstring::npos) {
@@ -512,6 +703,21 @@ void LogMessage(const std::wstring& message) {
         SendMessageW(g_hLogEdit, EM_REPLACESEL, FALSE, (LPARAM)fullMessage.c_str());
         SendMessageW(g_hLogEdit, EM_SCROLLCARET, 0, 0);
     }
+}
+
+static std::wstring LastErrorText(DWORD err) {
+    if (err == 0) return L"0";
+    wchar_t* msg = nullptr;
+    DWORD flags = FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_SYSTEM | FORMAT_MESSAGE_IGNORE_INSERTS;
+    DWORD len = FormatMessageW(flags, nullptr, err, 0, (LPWSTR)&msg, 0, nullptr);
+    std::wstring text = std::to_wstring(err);
+    if (len && msg) {
+        std::wstring m(msg, len);
+        while (!m.empty() && (m.back() == L'\r' || m.back() == L'\n')) m.pop_back();
+        text += L" (" + m + L")";
+    }
+    if (msg) LocalFree(msg);
+    return text;
 }
 
 // ============================================================================
@@ -555,15 +761,17 @@ void CleanupTemporaryFiles() {
 
 // 从EXE资源段释放文件到磁盘
 bool ExtractResourceToFile(UINT resourceId, LPCWSTR resourceType, const std::wstring& filePath) {
+    LogMessage(L"释放资源: ID=" + std::to_wstring(resourceId) + L" -> " + filePath);
+
     HRSRC hRes = FindResourceW(g_hInstance, MAKEINTRESOURCEW(resourceId), resourceType);
     if (!hRes) {
-        LogMessage(L"错误: 无法找到资源 ID=" + std::to_wstring(resourceId));
+        LogMessage(L"错误: 无法找到资源 ID=" + std::to_wstring(resourceId) + L"，GetLastError=" + LastErrorText(GetLastError()));
         return false;
     }
 
     HGLOBAL hResData = LoadResource(g_hInstance, hRes);
     if (!hResData) {
-        LogMessage(L"错误: 无法加载资源 ID=" + std::to_wstring(resourceId));
+        LogMessage(L"错误: 无法加载资源 ID=" + std::to_wstring(resourceId) + L"，GetLastError=" + LastErrorText(GetLastError()));
         return false;
     }
 
@@ -578,7 +786,7 @@ bool ExtractResourceToFile(UINT resourceId, LPCWSTR resourceType, const std::wst
     HANDLE hFile = CreateFileW(filePath.c_str(), GENERIC_WRITE, 0, nullptr,
         CREATE_ALWAYS, FILE_ATTRIBUTE_NORMAL, nullptr);
     if (hFile == INVALID_HANDLE_VALUE) {
-        LogMessage(L"错误: 无法创建文件 " + filePath);
+        LogMessage(L"错误: 无法创建文件 " + filePath + L"，GetLastError=" + LastErrorText(GetLastError()));
         return false;
     }
 
@@ -587,11 +795,11 @@ bool ExtractResourceToFile(UINT resourceId, LPCWSTR resourceType, const std::wst
     CloseHandle(hFile);
 
     if (!result || written != size) {
-        LogMessage(L"错误: 写入文件失败 " + filePath);
+        LogMessage(L"错误: 写入文件失败 " + filePath + L"，GetLastError=" + LastErrorText(GetLastError()));
         return false;
     }
 
-    LogMessage(L"已释放资源到: " + filePath);
+    LogMessage(L"已释放资源到: " + filePath + L" (" + std::to_wstring(size) + L" bytes)");
     return true;
 }
 
@@ -984,6 +1192,7 @@ void ShowPage(int page) {
     ShowWindow(g_hVersionLabel, SW_HIDE);
     ShowWindow(g_hVersionTab, SW_HIDE);
     ShowWindow(g_hFileInfoLabel, SW_HIDE);
+    if (g_hProgressText) ShowWindow(g_hProgressText, SW_HIDE);
 
     switch (page) {
     case PAGE_WELCOME:
@@ -1018,6 +1227,7 @@ void ShowPage(int page) {
         SetWindowTextW(g_hTitleLabel, L"正在安装");
         SetWindowTextW(g_hSubtitleLabel, L"请稍候，正在配置和安装 Fufu...");
         ShowWindow(g_hProgressBar, SW_SHOW);
+        // Do not show separate progress text label; use log + progress bar.
         ShowWindow(g_hLogEdit, SW_SHOW);
         SendMessageW(g_hProgressBar, PBM_SETPOS, 0, 0);
         SetWindowTextW(g_hLogEdit, L"");
@@ -1096,17 +1306,27 @@ bool PrepareInstallDirectory() {
     LogMessage(L"安装路径: " + g_installPath);
 
     // 在准备安装前删除上一版本的安装目录
+    LogMessage(L"检查并移除旧版本安装目录...");
     if (!RemovePreviousInstall(g_installPath)) {
         LogMessage(L"错误: 无法删除之前的安装目录");
         return false;
     }
 
     // 创建基础目录和安装目录
-    CreateDirectoryW(g_tempPath.c_str(), nullptr);
+    LogMessage(L"创建目录: " + g_tempPath);
+    if (!CreateDirectoryW(g_tempPath.c_str(), nullptr)) {
+        DWORD err = GetLastError();
+        if (err != ERROR_ALREADY_EXISTS) {
+            LogMessage(L"错误: 无法创建临时目录，GetLastError=" + LastErrorText(err));
+            return false;
+        }
+    }
+
+    LogMessage(L"创建目录: " + g_installPath);
     if (!CreateDirectoryW(g_installPath.c_str(), nullptr)) {
         DWORD err = GetLastError();
         if (err != ERROR_ALREADY_EXISTS) {
-            LogMessage(L"错误: 无法创建安装目录");
+            LogMessage(L"错误: 无法创建安装目录，GetLastError=" + LastErrorText(err));
             return false;
         }
     }
@@ -1114,7 +1334,7 @@ bool PrepareInstallDirectory() {
     // 检查并清理旧的AppX目录
     std::wstring installDir = g_installPath + L"\\AppX";
     if (GetFileAttributesW(installDir.c_str()) != INVALID_FILE_ATTRIBUTES) {
-        LogMessage(L"清理旧的安装文件...");
+        LogMessage(L"清理旧的安装文件目录: " + installDir);
 
         std::wstring cmd = L"/c rd /s /q \"" + installDir + L"\"";
 
@@ -1127,10 +1347,17 @@ bool PrepareInstallDirectory() {
 
         if (ShellExecuteExW(&sei)) {
             WaitForSingleObject(sei.hProcess, INFINITE);
+            DWORD exitCode = 0;
+            GetExitCodeProcess(sei.hProcess, &exitCode);
             CloseHandle(sei.hProcess);
+            LogMessage(L"清理 AppX 目录完成，cmd 退出码: " + std::to_wstring(exitCode));
+        }
+        else {
+            LogMessage(L"警告: 无法启动 cmd.exe 清理 AppX 目录，GetLastError=" + LastErrorText(GetLastError()));
         }
     }
 
+    LogMessage(L"安装目录准备完成");
     return true;
 }
 
@@ -1139,22 +1366,28 @@ DWORD WINAPI PerformConfigurationThread(LPVOID lpParam) {
     bool success = true;
     std::wstring downloadedPath;
 
-    // 阶段1: 准备安装目录 (10%)
     UpdateProgress(5);
     LogMessage(L"========== 开始安装 ==========");
 
+    LogMessage(L"[1/8] 准备安装目录");
     if (!PrepareInstallDirectory()) {
         success = false;
         goto cleanup;
     }
     UpdateProgress(10);
 
-    // 阶段2: 下载并解压所选版本 (35%)
+    LogMessage(L"[2/8] 下载并解压所选版本");
     LogMessage(L"准备下载所选版本...");
 
-    // 释放 7z 工具
-    ExtractResourceToFile(IDR_7ZEXE, L"BINARY", g_tempPath + L"\\7z.exe");
-    ExtractResourceToFile(IDR_7ZDLL, L"BINARY", g_tempPath + L"\\7z.dll");
+    LogMessage(L"释放 7z 工具...");
+    if (!ExtractResourceToFile(IDR_7ZEXE, L"BINARY", g_tempPath + L"\\7z.exe")) {
+        success = false;
+        goto cleanup;
+    }
+    if (!ExtractResourceToFile(IDR_7ZDLL, L"BINARY", g_tempPath + L"\\7z.dll")) {
+        success = false;
+        goto cleanup;
+    }
 
     if (!DownloadSelectedVersion(downloadedPath)) {
         success = false;
@@ -1170,46 +1403,84 @@ DWORD WINAPI PerformConfigurationThread(LPVOID lpParam) {
     }
     UpdateProgress(35);
 
-    // 阶段3: 检查.NET 8 SDK (45%)
+    LogMessage(L"[3/8] 检查/安装 .NET 8 SDK");
     LogMessage(L"检查.NET 8 SDK...");
     if (!CheckDotNet8SDK()) {
+        LogMessage(L"未检测到 .NET 8 SDK，尝试安装...");
         if (!InstallDotNet8SDK()) {
             LogMessage(L"警告: .NET 8 SDK未安装，应用可能无法正常运行");
         }
+        else {
+            LogMessage(L".NET 8 SDK 安装流程已执行");
+        }
+    }
+    else {
+        LogMessage(L"已检测到 .NET 8 SDK，跳过安装");
     }
     UpdateProgress(45);
 
-    // 新增阶段: 检查 VC++ 运行时 (55%)
+    LogMessage(L"[4/8] 检查/安装 VC++ 运行时");
     LogMessage(L"检查 VC++ 运行时...");
     if (!CheckVCRuntime()) {
+        LogMessage(L"未检测到 VC++ 运行时，尝试安装...");
         if (!InstallVCRuntime()) {
             LogMessage(L"警告: VC++ 运行时未安装，应用可能无法正常运行");
         }
+        else {
+            LogMessage(L"VC++ 运行时安装流程已执行");
+        }
+    }
+    else {
+        LogMessage(L"已检测到 VC++ 运行时，跳过安装");
     }
     UpdateProgress(55);
 
-    // 阶段4: 安装WebView2 (65%)
+    LogMessage(L"[5/8] 检查/安装 WebView2");
     LogMessage(L"安装WebView2运行时...");
     if (!IsWebView2Installed()) {
-        InstallWebview2();
+        LogMessage(L"未检测到 WebView2，开始安装...");
+        if (!InstallWebview2()) {
+            LogMessage(L"警告: WebView2 安装失败，应用可能无法正常运行");
+        }
+        else {
+            LogMessage(L"WebView2 安装流程已执行");
+        }
     }
     else {
         LogMessage(L"跳过 WebView2 安装，已检测到运行时");
     }
     UpdateProgress(65);
 
-     // 阶段6: 配置PowerShell执行策略 (82%)
-     LogMessage(L"配置PowerShell执行策略...");
-     ExecutePowerShellWithLog(L"Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned -Force");
-     ExecutePowerShellWithLog(L"Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force");
-     UpdateProgress(82);
+    LogMessage(L"[6/8] 配置 PowerShell 执行策略");
+    LogMessage(L"配置PowerShell执行策略...");
+    {
+        bool ok1 = ExecutePowerShellWithLog(L"Set-ExecutionPolicy -Scope LocalMachine -ExecutionPolicy RemoteSigned -Force");
+        LogMessage(std::wstring(L"LocalMachine 执行策略设置") + (ok1 ? L"成功" : L"失败"));
 
-     // 阶段8: 创建桌面快捷方式 (98%)
-     CreateDesktopShortcut();
-     UpdateProgress(98);
+        bool ok2 = ExecutePowerShellWithLog(L"Set-ExecutionPolicy -Scope CurrentUser -ExecutionPolicy RemoteSigned -Force");
+        LogMessage(std::wstring(L"CurrentUser 执行策略设置") + (ok2 ? L"成功" : L"失败"));
 
+        if (!ok1 || !ok2) {
+            LogMessage(L"警告: PowerShell 执行策略设置未完全成功");
+        }
+    }
+    UpdateProgress(82);
+
+    LogMessage(L"[7/8] 创建桌面快捷方式");
+    {
+        bool shortcutOk = CreateDesktopShortcut();
+        LogMessage(std::wstring(L"桌面快捷方式") + (shortcutOk ? L"创建成功" : L"创建失败"));
+        if (!shortcutOk) {
+            LogMessage(L"警告: 快捷方式创建失败（不影响主程序文件安装）");
+        }
+    }
+    UpdateProgress(98);
+
+    LogMessage(L"[8/8] 记录安装位置");
     if (success) {
-        RecordInstallLocation(g_installPath);
+        if (!RecordInstallLocation(g_installPath)) {
+            LogMessage(L"警告: 记录安装路径失败");
+        }
     }
 
     LogMessage(L"========== 安装完成 ==========");
@@ -1218,10 +1489,10 @@ DWORD WINAPI PerformConfigurationThread(LPVOID lpParam) {
 cleanup:
     g_installSuccess = success;
 
-    // 清理临时文件
+    LogMessage(L"清理临时文件...");
     CleanupTemporaryFiles();
+    LogMessage(L"清理临时文件完成");
 
-    // 发送完成消息，wParam low bit = success, bit 8 = needs reboot
     WPARAM completionParam = (g_installSuccess ? 1 : 0) | (g_needsReboot ? (1 << 8) : 0);
     PostMessageW(g_hMainWnd, WM_CONFIGURATION_COMPLETE, completionParam, 0);
 
@@ -1299,6 +1570,12 @@ LRESULT CALLBACK WindowProcedure(HWND hwnd, UINT msg, WPARAM wParam, LPARAM lPar
             WS_CHILD | PBS_SMOOTH,
             20, 100, 530, 22, hwnd, (HMENU)IDC_PROGRESS_BAR, g_hInstance, nullptr);
         SendMessageW(g_hProgressBar, PBM_SETRANGE, 0, MAKELPARAM(0, 100));
+
+        // 下载进度/速度文本（不再使用，保留句柄避免破坏现有资源初始化）
+        g_hProgressText = CreateWindowExW(0, L"STATIC", L"",
+            WS_CHILD | SS_LEFT,
+            20, 125, 530, 18, hwnd, (HMENU)IDC_PROGRESS_TEXT, g_hInstance, nullptr);
+        SendMessageW(g_hProgressText, WM_SETFONT, (WPARAM)g_hNormalFont, TRUE);
 
         // 创建日志编辑框
         g_hLogEdit = CreateWindowExW(WS_EX_CLIENTEDGE, L"EDIT", L"",

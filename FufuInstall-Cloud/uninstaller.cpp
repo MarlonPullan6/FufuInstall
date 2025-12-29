@@ -79,20 +79,22 @@ namespace {
 
 bool RemovePreviousInstall(const std::wstring& currentInstallPath) {
     std::wstring recordedPath;
-    LoadRecordedInstallPath(recordedPath);
+    bool hasRecord = LoadRecordedInstallPath(recordedPath);
 
-    if (recordedPath.empty()) {
+    if (!hasRecord || recordedPath.empty()) {
+        LogMessage(L"未找到历史安装记录，跳过旧版本清理");
         return true;
     }
 
-    // 避免误删系统目录，确保路径包含应用文件夹名
+    // 避免误删系统目录：必须包含应用文件夹名
     if (recordedPath.find(kAppFolderName) == std::wstring::npos) {
-        LogMessage(L"跳过删除，记录的路径不包含应用目录: " + recordedPath);
+        LogMessage(L"跳过删除：记录的路径不包含应用目录名: " + recordedPath);
         return true;
     }
 
     if (GetFileAttributesW(recordedPath.c_str()) == INVALID_FILE_ATTRIBUTES) {
-        return true; // 已不存在
+        LogMessage(L"旧安装目录不存在，跳过删除: " + recordedPath);
+        return true;
     }
 
     LogMessage(L"删除之前的安装目录: " + recordedPath);
@@ -101,9 +103,20 @@ bool RemovePreviousInstall(const std::wstring& currentInstallPath) {
         return false;
     }
 
-    // 若删除了与当前不同的路径，同时清空记录避免重复操作
+    LogMessage(L"旧安装目录删除成功: " + recordedPath);
+
+    // 若旧记录路径与当前不同，清理记录文件，避免重复清理
     if (!currentInstallPath.empty() && _wcsicmp(recordedPath.c_str(), currentInstallPath.c_str()) != 0) {
-        DeleteFileW(GetRecordFilePath().c_str());
+        std::wstring recordFile = GetRecordFilePath();
+        if (DeleteFileW(recordFile.c_str())) {
+            LogMessage(L"已删除旧安装记录文件: " + recordFile);
+        }
+        else {
+            DWORD err = GetLastError();
+            if (err != ERROR_FILE_NOT_FOUND) {
+                LogMessage(L"警告: 删除旧安装记录文件失败: " + recordFile + L"，错误码=" + std::to_wstring(err));
+            }
+        }
     }
 
     return true;
@@ -111,6 +124,8 @@ bool RemovePreviousInstall(const std::wstring& currentInstallPath) {
 
 bool RecordInstallLocation(const std::wstring& installPath) {
     if (installPath.empty()) return false;
+
+    LogMessage(L"记录安装路径到文件: " + installPath);
 
     // 确保记录目录存在
     CreateDirectoryW(kDownloadBaseDir.c_str(), nullptr);

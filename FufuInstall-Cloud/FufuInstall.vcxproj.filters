@@ -9,25 +9,34 @@
     <ClCompile Include="FufuInstall.cpp">
       <Filter>src</Filter>
     </ClCompile>
-    <ClCompile Include="Globals.cpp">
+    <ClCompile Include="Downloader.cpp">
       <Filter>src</Filter>
     </ClCompile>
     <ClCompile Include="EnvChecks.cpp">
       <Filter>src</Filter>
     </ClCompile>
+    <ClCompile Include="Globals.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
     <ClCompile Include="uninstaller.cpp">
+      <Filter>src</Filter>
+    </ClCompile>
+    <ClCompile Include="VersionHelpers.cpp">
       <Filter>src</Filter>
     </ClCompile>
   </ItemGroup>
   <ItemGroup>
     <ClInclude Include="resource.h" />
+    <ClInclude Include="Downloader.h">
+      <Filter>src</Filter>
+    </ClInclude>
+    <ClInclude Include="EnvChecks.h">
+      <Filter>src</Filter>
+    </ClInclude>
     <ClInclude Include="FufuInstall.h">
       <Filter>src</Filter>
     </ClInclude>
     <ClInclude Include="Globals.h">
-      <Filter>src</Filter>
-    </ClInclude>
-    <ClInclude Include="EnvChecks.h">
       <Filter>src</Filter>
     </ClInclude>
     <ClInclude Include="uninstaller.h">

@@ -12,6 +12,7 @@ inline constexpr int PAGE_COMPLETE = 4;   // 完成页
 
 inline constexpr UINT WM_UPDATE_PROGRESS = WM_USER + 1;         // 更新进度的自定义消息
 inline constexpr UINT WM_CONFIGURATION_COMPLETE = WM_USER + 2;  // 配置完成的自定义消息
+inline constexpr UINT WM_UPDATE_PROGRESS_TEXT = WM_USER + 3;    // 更新下载进度文本的自定义消息
 
 inline constexpr int IDC_TITLE_LABEL = 1001;      // 标题文本控件ID
 inline constexpr int IDC_SUBTITLE_LABEL = 1002;   // 副标题文本控件ID
@@ -27,6 +28,7 @@ inline constexpr int IDC_BROWSE_BUTTON = 1011;    // 浏览路径按钮ID
 inline constexpr int IDC_VERSION_LABEL = 1012;    // 版本显示标签ID
 inline constexpr int IDC_FILEINFO_LABEL = 1014;   // 文件信息标签ID
 inline constexpr int IDC_VERSION_TAB = 1015;      // 版本选择标签页控件ID
+inline constexpr int IDC_PROGRESS_TEXT = 1016;    // 下载进度文本标签ID
 
 inline constexpr int BUTTON_Y = 320;               // 底部按钮Y坐标
 inline constexpr int BUTTON_HEIGHT = 28;           // 按钮高度
@@ -63,6 +65,7 @@ extern HWND g_hBrowseButton;               // 浏览路径按钮
 extern HWND g_hVersionLabel;               // 版本显示标签
 extern HWND g_hVersionTab;                 // 版本选择标签页控件
 extern HWND g_hFileInfoLabel;              // 文件信息标签
+extern HWND g_hProgressText;               // 下载进度文本标签
 
 extern HFONT g_hTitleFont;                 // 标题字体
 extern HFONT g_hNormalFont;                // 正文字体

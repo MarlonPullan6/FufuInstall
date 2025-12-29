@@ -19,12 +19,15 @@
     </ProjectConfiguration>
   </ItemGroup>
   <ItemGroup>
+    <ClCompile Include="Downloader.cpp" />
     <ClCompile Include="EnvChecks.cpp" />
     <ClCompile Include="FufuInstall.cpp" />
     <ClCompile Include="Globals.cpp" />
     <ClCompile Include="uninstaller.cpp" />
+    <ClCompile Include="VersionHelpers.cpp" />
   </ItemGroup>
   <ItemGroup>
+    <ClInclude Include="Downloader.h" />
     <ClInclude Include="EnvChecks.h" />
     <ClInclude Include="FufuInstall.h" />
     <ClInclude Include="Globals.h" />
@@ -40,7 +43,6 @@
     <ProjectGuid>{296280db-ea48-49d4-9671-a105e9fda111}</ProjectGuid>
     <RootNamespace>FufuInstall</RootNamespace>
     <WindowsTargetPlatformVersion>10.0</WindowsTargetPlatformVersion>
-    <ProjectName>FufuInstall-Cloud</ProjectName>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.Default.props" />
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'" Label="Configuration">
@@ -61,17 +63,13 @@
     <UseDebugLibraries>true</UseDebugLibraries>
     <PlatformToolset>v145</PlatformToolset>
     <CharacterSet>Unicode</CharacterSet>
-    <VCToolsVersion>
-    </VCToolsVersion>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'" Label="Configuration">
     <ConfigurationType>Application</ConfigurationType>
-    <UseDebugLibraries>true</UseDebugLibraries>
+    <UseDebugLibraries>false</UseDebugLibraries>
     <PlatformToolset>v145</PlatformToolset>
-    <WholeProgramOptimization>false</WholeProgramOptimization>
+    <WholeProgramOptimization>true</WholeProgramOptimization>
     <CharacterSet>Unicode</CharacterSet>
-    <VCToolsVersion>
-    </VCToolsVersion>
   </PropertyGroup>
   <Import Project="$(VCTargetsPath)\Microsoft.Cpp.props" />
   <ImportGroup Label="ExtensionSettings">
@@ -96,18 +94,14 @@
     <ReferencePath>$(ReferencePath)</ReferencePath>
     <PublicIncludeDirectories>
     </PublicIncludeDirectories>
-    <TargetName>FufuInstall-Cloud-Preview</TargetName>
-    <IntDir>$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
-    <OutDir>$(Platform)\$(Configuration)\</OutDir>
+    <TargetName>FufuInstall--Release</TargetName>
   </PropertyGroup>
   <PropertyGroup Condition="'$(Configuration)|$(Platform)'=='Release|x64'">
     <IncludePath>$(IncludePath)</IncludePath>
     <ReferencePath>$(ReferencePath)</ReferencePath>
     <PublicIncludeDirectories>
     </PublicIncludeDirectories>
-    <TargetName>FufuInstall-Cloud-Preview</TargetName>
-    <IntDir>$(Platform)\$(Configuration)\$(ProjectName)\</IntDir>
-    <OutDir>$(Platform)\$(Configuration)\</OutDir>
+    <TargetName>FufuInstall--Release</TargetName>
   </PropertyGroup>
   <ItemDefinitionGroup Condition="'$(Configuration)|$(Platform)'=='Debug|Win32'">
     <ClCompile>
@@ -144,9 +138,7 @@
       <PreprocessorDefinitions>_DEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <LanguageStandard_C>Default</LanguageStandard_C>
-      <CompileAs>CompileAsCpp</CompileAs>
+      <AdditionalIncludeDirectories>..\FufuInstall\Resources;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
@@ -158,14 +150,12 @@
     <ClCompile>
       <WarningLevel>Level3</WarningLevel>
       <FunctionLevelLinking>true</FunctionLevelLinking>
-      <IntrinsicFunctions>false</IntrinsicFunctions>
+      <IntrinsicFunctions>true</IntrinsicFunctions>
       <SDLCheck>true</SDLCheck>
       <PreprocessorDefinitions>NDEBUG;_WINDOWS;%(PreprocessorDefinitions)</PreprocessorDefinitions>
       <ConformanceMode>true</ConformanceMode>
       <LanguageStandard>stdcpp20</LanguageStandard>
-      <AdditionalIncludeDirectories>%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
-      <LanguageStandard_C>Default</LanguageStandard_C>
-      <CompileAs>CompileAsCpp</CompileAs>
+      <AdditionalIncludeDirectories>..\FufuInstall\Resources;%(AdditionalIncludeDirectories)</AdditionalIncludeDirectories>
     </ClCompile>
     <Link>
       <SubSystem>Windows</SubSystem>
